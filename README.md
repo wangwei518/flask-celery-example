@@ -23,3 +23,9 @@ Quick Setup
 6. Go to `http://localhost:5000/` and enjoy this application!
 
 For details on how this all works, see my article [Using Celery with Flask](http://blog.miguelgrinberg.com/post/using-celery-with-flask).
+
+Run Steps
+---------
+1. run redis server `run-redis.sh`
+2. run workers `venv/bin/celery worker -A app.celery --loglevel=info`
+3. run app `venv/bin/python app.py`
