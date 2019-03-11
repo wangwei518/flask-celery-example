@@ -1,13 +1,38 @@
 import os
 import random
 import time
-from flask import Flask, request, render_template, session, flash, redirect, \
-    url_for, jsonify
-from flask.ext.mail import Mail, Message
+# from flask import Flask, request, render_template, session, flash, redirect, \
+#     url_for, jsonify, Response
+import flask
+import requests
+from flask_mail import Mail, Message
 from celery import Celery
+from flask_cors import CORS
 
+class MyResponse(flask.Response):
+    @classmethod
+    def force_type(cls, response, environ=None):
+        if isinstance(response,(list,dict)):
+            response = flask.jsonify(response)
+        return super(flask.Response, cls).force_type(response, environ)
 
-app = Flask(__name__)
+class MyFlask(flask.Flask):
+        response_class = MyResponse
+
+def after_request(response):
+    response.headers['Access-Control-Allow-Origin']  = '*'
+    response.headers['Access-Control-Allow-Methods'] = 'PUT, GET, POST, DELETE, PATCH, OPTIONS, HEAD'
+    # response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization, x-token'
+    response.headers['Access-Control-Allow-Headers'] = '*'
+    return response
+
+# app = MyFlask(__name__)
+# cors = CORS(app,supports_credentials=True)
+# app.after_request(after_request)
+
+app = flask.Flask(__name__)
+CORS(app)
+
 app.config['SECRET_KEY'] = 'top-secret!'
 
 # Flask-Mail configuration
@@ -59,10 +84,46 @@ def long_task(self):
             'result': 42}
 
 @celery.task
-def CreateIp(msg):
+def CreateIp(payload):
     """Background create ip from request"""
-    with app.app_context():
-        mail.send(msg)
+    try:
+        item = payload['data']['attributes']
+        repo_path = item['path']
+        repo_name = item['repo']
+    except KeyError:
+        return {'status' : 1, 'message' : 'payload format error, payload=%s' % (payload)}
+    else:
+        pass
+
+    c = []
+    c.append('/bin/mkdir -p %s' % (repo_path))
+
+    repo_branch = 'master'
+    if 'branch' in item.keys():
+        if item['branch'] != '':
+            repo_branch = item['branch']
+
+    c.append('/usr/local/git/bin/git clone --branch %s %s %s' % (repo_branch, repo_name, repo_path))
+
+    if 'tag' in item.keys():
+        if item['tag'] != '':
+            repo_tag = item['tag']
+            c.append('/usr/local/git/bin/git checkout %s' % (repo_tag))
+
+    shell_cmd = ';'.join(c)
+    status.output = subprocess.getstatusoutput(shell_cmd)
+    if status != 0:
+        return {'status': status, 'message' : output}
+
+    if 'callback' in item.keys():
+        url = item['callback']
+        r = requests.get(url)
+        if r.status_code == 200 or r.status_code==201:
+            return {'status': 0, 'message' : ''}
+        else:
+            return {'status': r.status_code, 'message' : 'requests status_code=%d' % (r.status_code)}
+
+
 
 @celery.task
 def RemoveIp(msg):
@@ -85,31 +146,31 @@ def UpdateIp(msg):
 
 @app.route('/', methods=['GET', 'POST'])
 def index():
-    if request.method == 'GET':
-        return render_template('index.html', email=session.get('email', ''))
-    email = request.form['email']
-    session['email'] = email
+    if flask.request.method == 'GET':
+        return flask.render_template('index.html', email=flask.session.get('email', ''))
+    email = flask.request.form['email']
+    flask.session['email'] = email
 
     # send the email
     msg = Message('Hello from Flask',
-                  recipients=[request.form['email']])
+                  recipients=[flask.request.form['email']])
     msg.body = 'This is a test email sent from a background Celery task.'
-    if request.form['submit'] == 'Send':
+    if flask.request.form['submit'] == 'Send':
         # send right away
         send_async_email.delay(msg)
-        flash('Sending email to {0}'.format(email))
+        flask.flash('Sending email to {0}'.format(email))
     else:
         # send in one minute
         send_async_email.apply_async(args=[msg], countdown=60)
-        flash('An email will be sent to {0} in one minute'.format(email))
+        flask.flash('An email will be sent to {0} in one minute'.format(email))
 
-    return redirect(url_for('index'))
+    return flask.redirect(flask.url_for('index'))
 
 
 @app.route('/longtask', methods=['POST'])
 def longtask():
     task = long_task.apply_async()
-    return jsonify({}), 202, {'Location': url_for('taskstatus',
+    return flask.jsonify({}), 202, {'Location': flask.url_for('taskstatus',
                                                   task_id=task.id)}
 
 
@@ -140,38 +201,75 @@ def taskstatus(task_id):
             'total': 1,
             'status': str(task.info),  # this is the exception raised
         }
-    return jsonify(response)
+    return flask.jsonify(response)
 
 @app.route('/api/v1/ip', methods=['POST'])
 def apiAddIp():
+    data = flask.request.get_json()
+    print(data)
+    CreateIp.apply_async(args=[data], countdown=5)
+    try:
+        data =
+    except KeyError:
 
-    {'project' : request.json['project']}
-    user        = request.json['user']
-    path        = request.json['path']
-    repo        = request.json['repo']
-    branch      = request.json['branch']
-    tag         = request.json['tag']
-    callback    = request.json['callback']
+    else:
+
+    res = {
+        'links': {
+            'self': flask.request.url,
+        },
+        'data': data,
+    }
+    return flask.jsonify(res)
+
+    #{'project' : request.json['project']}
+    #user        = request.json['user']
+    #path        = request.json['path']
+    #repo        = request.json['repo']
+    #branch      = request.json['branch']
+    #tag         = request.json['tag']
+    #callback    = request.json['callback']
 
 
 @app.route('/api/v1/ip/<id>', methods=['DELETE'])
 def apiDeleteIpById():
-    project     = request.json['project']
-    user        = request.json['user']
-    path        = request.json['path']
-    callback    = request.json['callback']
+    res = {
+        'links': {
+            'self': flask.request.url,
+        },
+        'data': [],
+    }
+    return flask.jsonify(res)
 
 @app.route('/api/v1/ip', methods=['GET'])
 def apiGetAllIp():
-    pass
+    res = {
+        'links': {
+            'self': flask.request.url,
+        },
+        'data': [],
+    }
+    return flask.jsonify(res)
 
 @app.route('/api/v1/ip/<id>', methods=['GET'])
 def apiGetIpById():
-    pass
+    res = {
+        'links': {
+            'self': flask.request.url,
+        },
+        'data': [],
+    }
+    return flask.jsonify(res)
 
 @app.route('/api/v1/ip/<id>', methods=['PUT','PATCH'])
 def apiUpdateIpById():
-    pass
+    res = {
+        'links': {
+            'self': flask.request.url,
+        },
+        'data': [],
+    }
+    return flask.jsonify(res)
 
 if __name__ == '__main__':
     app.run(debug=True)
