@@ -58,6 +58,30 @@ def long_task(self):
     return {'current': 100, 'total': 100, 'status': 'Task completed!',
             'result': 42}
 
+@celery.task
+def CreateIp(msg):
+    """Background create ip from request"""
+    with app.app_context():
+        mail.send(msg)
+
+@celery.task
+def RemoveIp(msg):
+    """Background task to send an email with Flask-Mail."""
+    with app.app_context():
+        mail.send(msg)
+
+@celery.task
+def ListIp(msg):
+    """Background task to send an email with Flask-Mail."""
+    with app.app_context():
+        mail.send(msg)
+
+@celery.task
+def UpdateIp(msg):
+    """Background task to send an email with Flask-Mail."""
+    with app.app_context():
+        mail.send(msg)
+
 
 @app.route('/', methods=['GET', 'POST'])
 def index():
@@ -118,6 +142,36 @@ def taskstatus(task_id):
         }
     return jsonify(response)
 
+@app.route('/api/v1/ip', methods=['POST'])
+def apiAddIp():
+
+    {'project' : request.json['project']}
+    user        = request.json['user']
+    path        = request.json['path']
+    repo        = request.json['repo']
+    branch      = request.json['branch']
+    tag         = request.json['tag']
+    callback    = request.json['callback']
+
+
+@app.route('/api/v1/ip/<id>', methods=['DELETE'])
+def apiDeleteIpById():
+    project     = request.json['project']
+    user        = request.json['user']
+    path        = request.json['path']
+    callback    = request.json['callback']
+
+@app.route('/api/v1/ip', methods=['GET'])
+def apiGetAllIp():
+    pass
+
+@app.route('/api/v1/ip/<id>', methods=['GET'])
+def apiGetIpById():
+    pass
+
+@app.route('/api/v1/ip/<id>', methods=['PUT','PATCH'])
+def apiUpdateIpById():
+    pass
 
 if __name__ == '__main__':
     app.run(debug=True)
