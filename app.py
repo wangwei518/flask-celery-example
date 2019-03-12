@@ -7,7 +7,7 @@ import flask
 import requests
 import subprocess
 from flask_mail import Mail, Message
-from celery import Celery
+from celery import Celery, uuid
 from flask_cors import CORS
 
 class MyResponse(flask.Response):
@@ -120,7 +120,7 @@ def CreateIp(reqAttributes):
         c.append('/usr/local/git/bin/git checkout %s' % (repo_tag))
 
     shell_cmd = ';'.join(c)
-    status.output = subprocess.getstatusoutput(shell_cmd)
+    status,output = subprocess.getstatusoutput(shell_cmd)
     if status != 0:
         return {'status': status, 'message' : output}
 
@@ -134,10 +134,35 @@ def CreateIp(reqAttributes):
 
 
 @celery.task
-def RemoveIp(msg):
+def RemoveIp(reqAttributes):
     """Background task to send an email with Flask-Mail."""
-    with app.app_context():
-        mail.send(msg)
+    try:
+        repo_path = reqAttributes['path']
+        repo_callback = reqAttributes['callback']
+    except KeyError:
+        if 'path' not in reqAttributes:
+            return {'status' : 1, 'message' : 'payload format error, payload=%s' % (reqAttributes)}
+        if 'callback' not in reqAttributes:
+            repo_callback = None
+    else:
+        pass
+
+    c = []
+    c.append('/bin/rm -rf %s' % (repo_path))
+    shell_cmd = ';'.join(c)
+    status,output = subprocess.getstatusoutput(shell_cmd)
+
+    if status != 0:
+        return {'status': status, 'message' : output}
+
+    if repo_callback:
+        r = requests.get(repo_callback)
+        if r.status_code==200 or r.status_code==201:
+            return {'status': 0, 'message' : 'hook success, url=%s' % (repo_callback)}
+        else:
+            return {'status': r.status_code, 'message' : 'hook fail, url=%s' % (repo_callback)}
+
+
 
 @celery.task
 def ListIp(msg):
@@ -213,7 +238,7 @@ def taskstatus(task_id):
 
 @app.route('/api/v1/ip', methods=['POST'])
 def apiAddIp():
-    
+
     try:
         reqPayload = flask.request.get_json()
         reqAttributes = reqPayload['data']['attributes']
@@ -230,33 +255,51 @@ def apiAddIp():
         }
         return flask.jsonify(resPayload), 422
     else:
-        CreateIp.apply_async(args=[reqAttributes], countdown=5)
+        task_id = uuid()
+        CreateIp.apply_async(args=[reqAttributes], countdown=5, task_id=task_id)
         reqPayload['links'] = {'self' : flask.request.url}
+        reqPayload['data']['task_id'] = task_id
         return flask.jsonify(reqPayload)
 
 
-@app.route('/api/v1/ip/<id>', methods=['DELETE'])
-def apiDeleteIpById():
-    res = {
-        'links': {
-            'self': flask.request.url,
-        },
-        'data': [],
-    }
-    return flask.jsonify(res)
+@app.route('/api/v1/ip', methods=['DELETE'])
+def apiDeleteIpByPath():
+    try:
+        reqPayload = flask.request.get_json()
+        reqAttributes = reqPayload['data']['attributes']
+    except:
+        resPayload = {
+            'errors'    : [
+                {
+                    'status'    : '422',
+                    'source'    : '',
+                    'title'     : '',
+                    'detail'    : 'invalid request json format',
+                }
+            ]
+        }
+        return flask.jsonify(resPayload), 422
+    else:
+        task_id = uuid()
+        RemoveIp.apply_async(args=[reqAttributes], countdown=5, task_id=task_id)
+        reqPayload['links'] = {'self' : flask.request.url}
+        reqPayload['data']['task_id'] = task_id
+        return flask.jsonify(reqPayload), 201
+
 
 @app.route('/api/v1/ip', methods=['GET'])
 def apiGetAllIp():
 
-    c = []
-    c.append('cd %s' % (''))
-    c.append('git describe --always')
-    shell_cmd = ';'.join(c)
+    # c = []
+    # c.append('cd %s' % (''))
+    # c.append('git describe --always')
+    # shell_cmd = ';'.join(c)
 
-    status.output = subprocess.getstatusoutput(shell_cmd)
+    # status.output = subprocess.getstatusoutput(shell_cmd)
+
     if status != 0:
         return {'status': status, 'message' : output}
-    
+
     res = {
         'links': {
             'self': flask.request.url,
@@ -284,6 +327,27 @@ def apiUpdateIpById():
         'data': [],
     }
     return flask.jsonify(res)
+
+@app.route('/hook', methods=['GET'])
+def ApiGetHook():
+    try:
+        reqId       = flask.request.args.get('id')
+        reqTaskId   = flask.request.args.get('task_id')
+        reqStatus   = flask.request.args.get('status')
+    except:
+        reqId = ''
+        reqTaskId = ''
+        reqStatus = ''
+    else:
+        print('[hook] debug, id=%s, task_id=%s, status=%s' % (reqId, reqTaskId, reqStatus))
+
+    res = {
+        'links': {
+            'self': flask.request.url,
+        },
+        'data': [],
+    }
+    return flask.jsonify(res),200
 
 if __name__ == '__main__':
     app.run(debug=True)
