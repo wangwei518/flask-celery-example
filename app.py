@@ -5,6 +5,7 @@ import time
 #     url_for, jsonify, Response
 import flask
 import requests
+import subprocess
 from flask_mail import Mail, Message
 from celery import Celery
 from flask_cors import CORS
@@ -84,44 +85,51 @@ def long_task(self):
             'result': 42}
 
 @celery.task
-def CreateIp(payload):
+def CreateIp(reqAttributes):
     """Background create ip from request"""
     try:
-        item = payload['data']['attributes']
-        repo_path = item['path']
-        repo_name = item['repo']
+        repo_path = reqAttributes['path']
+        repo_name = reqAttributes['repo']
+        repo_branch = reqAttributes['branch']
+        repo_branch = reqAttributes['tag']
+        repo_callback = reqAttributes['callback']
     except KeyError:
-        return {'status' : 1, 'message' : 'payload format error, payload=%s' % (payload)}
+        if 'path' not in reqAttributes:
+            return {'status' : 1, 'message' : 'payload format error, payload=%s' % (reqAttributes)}
+        if 'repo' not in reqAttributes:
+            return {'status' : 1, 'message' : 'payload format error, payload=%s' % (reqAttributes)}
+        if 'branch' not in reqAttributes:
+            repo_branch = 'master'
+        if 'tag' not in reqAttributes:
+            repo_tag = None
+        if 'callback' not in reqAttributes:
+            repo_callback = None
     else:
-        pass
+        if reqAttributes['branch'] == '':
+            repo_branch = 'master'
+        if reqAttributes['tag'] == '':
+            repo_tag = None
+        if reqAttributes['callback'] == '':
+            repo_callback = None
 
     c = []
     c.append('/bin/mkdir -p %s' % (repo_path))
-
-    repo_branch = 'master'
-    if 'branch' in item.keys():
-        if item['branch'] != '':
-            repo_branch = item['branch']
-
     c.append('/usr/local/git/bin/git clone --branch %s %s %s' % (repo_branch, repo_name, repo_path))
 
-    if 'tag' in item.keys():
-        if item['tag'] != '':
-            repo_tag = item['tag']
-            c.append('/usr/local/git/bin/git checkout %s' % (repo_tag))
+    if repo_tag:
+        c.append('/usr/local/git/bin/git checkout %s' % (repo_tag))
 
     shell_cmd = ';'.join(c)
     status.output = subprocess.getstatusoutput(shell_cmd)
     if status != 0:
         return {'status': status, 'message' : output}
 
-    if 'callback' in item.keys():
-        url = item['callback']
-        r = requests.get(url)
-        if r.status_code == 200 or r.status_code==201:
-            return {'status': 0, 'message' : ''}
+    if repo_callback:
+        r = requests.get(repo_callback)
+        if r.status_code==200 or r.status_code==201:
+            return {'status': 0, 'message' : 'hook success, url=%s' % (repo_callback)}
         else:
-            return {'status': r.status_code, 'message' : 'requests status_code=%d' % (r.status_code)}
+            return {'status': r.status_code, 'message' : 'hook fail, url=%s' % (repo_callback)}
 
 
 
@@ -205,30 +213,26 @@ def taskstatus(task_id):
 
 @app.route('/api/v1/ip', methods=['POST'])
 def apiAddIp():
-    data = flask.request.get_json()
-    print(data)
-    CreateIp.apply_async(args=[data], countdown=5)
+    
     try:
-        data =
-    except KeyError:
-
+        reqPayload = flask.request.get_json()
+        reqAttributes = reqPayload['data']['attributes']
+    except:
+        resPayload = {
+            'errors'    : [
+                {
+                    'status'    : '422',
+                    'source'    : '',
+                    'title'     : '',
+                    'detail'    : 'invalid request json format',
+                }
+            ]
+        }
+        return flask.jsonify(resPayload), 422
     else:
-
-    res = {
-        'links': {
-            'self': flask.request.url,
-        },
-        'data': data,
-    }
-    return flask.jsonify(res)
-
-    #{'project' : request.json['project']}
-    #user        = request.json['user']
-    #path        = request.json['path']
-    #repo        = request.json['repo']
-    #branch      = request.json['branch']
-    #tag         = request.json['tag']
-    #callback    = request.json['callback']
+        CreateIp.apply_async(args=[reqAttributes], countdown=5)
+        reqPayload['links'] = {'self' : flask.request.url}
+        return flask.jsonify(reqPayload)
 
 
 @app.route('/api/v1/ip/<id>', methods=['DELETE'])
@@ -243,6 +247,16 @@ def apiDeleteIpById():
 
 @app.route('/api/v1/ip', methods=['GET'])
 def apiGetAllIp():
+
+    c = []
+    c.append('cd %s' % (''))
+    c.append('git describe --always')
+    shell_cmd = ';'.join(c)
+
+    status.output = subprocess.getstatusoutput(shell_cmd)
+    if status != 0:
+        return {'status': status, 'message' : output}
+    
     res = {
         'links': {
             'self': flask.request.url,
